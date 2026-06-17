@@ -14,6 +14,7 @@
 #define ORBIT  3
 
 #define PHASE_MESSAGE_LIMIT 15
+#define SENSOR_COUNT 12
 
 QueueHandle_t telemetryQueue;
 
@@ -33,6 +34,7 @@ int phaseMessageCount = 0;
 
 volatile float latestSensorValue = 0.0f;
 char latestSensorName[30] = "";
+char latestSensorUnit[10] = "";
 
 typedef struct
 {
@@ -43,10 +45,38 @@ typedef struct
     int phase;
 } MissionMessage;
 
+typedef struct
+{
+    char phase[15];
+    char sensorName[30];
+    char unit[10];
+    char normalRange[40];
+    char threshold[50];
+    float currentValue;
+    char status[15];
+} SensorTable;
+
+SensorTable sensorTable[SENSOR_COUNT] =
+{
+    {"Launch", "EngineTemp", "C", "700-899 C", "> 850 C", 0, "NORMAL"},
+    {"Launch", "FuelPressure", "PSI", "3000-3999 PSI", "> 3900 PSI", 0, "NORMAL"},
+    {"Launch", "Thrust", "kN", "500-899 kN", "< 550 kN", 0, "NORMAL"},
+    {"Launch", "Vibration", "g", "2-9 g", "> 8 g", 0, "NORMAL"},
+
+    {"Ascent", "Altitude", "km", "50-349 km", "< 80 km", 0, "NORMAL"},
+    {"Ascent", "Velocity", "m/s", "1000-5999 m/s", "< 1500 m/s", 0, "NORMAL"},
+    {"Ascent", "FuelRemaining", "%", "20-99 %", "< 25 %", 0, "NORMAL"},
+    {"Ascent", "ExternalTemp", "C", "-100 to 99 C", "< -80 C or > 80 C", 0, "NORMAL"},
+
+    {"Orbit", "Battery", "%", "40-99 %", "< 45 %", 0, "NORMAL"},
+    {"Orbit", "SolarOutput", "W", "1000-1499 W", "< 1100 W", 0, "NORMAL"},
+    {"Orbit", "CabinTemp", "C", "18-27 C", "< 15 C or > 30 C", 0, "NORMAL"},
+    {"Orbit", "Radiation", "mSv", "0-14 mSv", "> 12 mSv", 0, "NORMAL"}
+};
+
 void formatTime(uint32_t ticks, char* timeStr)
 {
     uint32_t totalSeconds = ticks / 1000;
-
     uint32_t hours = totalSeconds / 3600;
     uint32_t minutes = (totalSeconds % 3600) / 60;
     uint32_t seconds = totalSeconds % 60;
@@ -76,6 +106,97 @@ int getTelemetryPriority(void)
     if (currentPhase == LAUNCH) return 3;
     if (currentPhase == ASCENT) return 2;
     return 1;
+}
+
+int CheckEmergencyCondition(const char* sensorName, float value)
+{
+    if (strcmp(sensorName, "EngineTemp") == 0 && value > 850)
+        return 1;
+
+    if (strcmp(sensorName, "FuelPressure") == 0 && value > 3900)
+        return 1;
+
+    if (strcmp(sensorName, "Thrust") == 0 && value < 550)
+        return 1;
+
+    if (strcmp(sensorName, "Vibration") == 0 && value > 8)
+        return 1;
+
+    if (strcmp(sensorName, "Altitude") == 0 && value < 80)
+        return 1;
+
+    if (strcmp(sensorName, "Velocity") == 0 && value < 1500)
+        return 1;
+
+    if (strcmp(sensorName, "FuelRemaining") == 0 && value < 25)
+        return 1;
+
+    if (strcmp(sensorName, "ExternalTemp") == 0 && (value < -80 || value > 80))
+        return 1;
+
+    if (strcmp(sensorName, "Battery") == 0 && value < 45)
+        return 1;
+
+    if (strcmp(sensorName, "SolarOutput") == 0 && value < 1100)
+        return 1;
+
+    if (strcmp(sensorName, "CabinTemp") == 0 && (value < 15 || value > 30))
+        return 1;
+
+    if (strcmp(sensorName, "Radiation") == 0 && value > 12)
+        return 1;
+
+    return 0;
+}
+
+void UpdateSensorTable(const char* sensorName, float value)
+{
+    int i;
+
+    for (i = 0; i < SENSOR_COUNT; i++)
+    {
+        if (strcmp(sensorTable[i].sensorName, sensorName) == 0)
+        {
+            sensorTable[i].currentValue = value;
+
+            if (CheckEmergencyCondition(sensorName, value))
+            {
+                strcpy(sensorTable[i].status, "EMERGENCY");
+            }
+            else
+            {
+                strcpy(sensorTable[i].status, "NORMAL");
+            }
+
+            break;
+        }
+    }
+}
+
+void PrintTelemetryThresholdTable(void)
+{
+    int i;
+
+    printf("\n============================================================================================\n");
+    printf(" LIVE TELEMETRY THRESHOLD TABLE\n");
+    printf("============================================================================================\n");
+    printf("%-10s %-18s %-15s %-22s %-25s %-12s\n",
+        "Phase", "Sensor", "Value", "Normal Range", "Emergency Threshold", "Status");
+    printf("--------------------------------------------------------------------------------------------\n");
+
+    for (i = 0; i < SENSOR_COUNT; i++)
+    {
+        printf("%-10s %-18s %7.2f %-6s %-22s %-25s %-12s\n",
+            sensorTable[i].phase,
+            sensorTable[i].sensorName,
+            sensorTable[i].currentValue,
+            sensorTable[i].unit,
+            sensorTable[i].normalRange,
+            sensorTable[i].threshold,
+            sensorTable[i].status);
+    }
+
+    printf("============================================================================================\n\n");
 }
 
 void GenerateTelemetry(MissionMessage* msg)
@@ -172,23 +293,6 @@ void GenerateTelemetry(MissionMessage* msg)
     }
 }
 
-int CheckEmergencyCondition(const char* sensorName, float value)
-{
-    if (strcmp(sensorName, "EngineTemp") == 0 && value > 850)
-        return 1;
-
-    if (strcmp(sensorName, "FuelPressure") == 0 && value > 3900)
-        return 1;
-
-    if (strcmp(sensorName, "Radiation") == 0 && value > 12)
-        return 1;
-
-    if (strcmp(sensorName, "Battery") == 0 && value < 45)
-        return 1;
-
-    return 0;
-}
-
 void TelemetryTask(void* pvParameters)
 {
     MissionMessage msg;
@@ -201,6 +305,9 @@ void TelemetryTask(void* pvParameters)
 
         latestSensorValue = msg.sensorValue;
         strcpy(latestSensorName, msg.sensorName);
+        strcpy(latestSensorUnit, msg.unit);
+
+        UpdateSensorTable(msg.sensorName, msg.sensorValue);
 
         if (CheckEmergencyCondition(msg.sensorName, msg.sensorValue))
         {
@@ -234,7 +341,6 @@ void TelemetryTask(void* pvParameters)
         else
         {
             formatTime(xTaskGetTickCount(), timeStr);
-
             printf("[TIME:%s] [QUEUE WARNING] Queue is full. Message lost.\n", timeStr);
             fflush(stdout);
         }
@@ -328,7 +434,7 @@ void EmergencyTask(void* pvParameters)
             printf("Time               : %s\n", timeStr);
             printf("Emergency Priority : 4\n");
             printf("Sensor             : %s\n", latestSensorName);
-            printf("Value              : %.2f\n", latestSensorValue);
+            printf("Value              : %.2f %s\n", latestSensorValue, latestSensorUnit);
             printf("Response           : Emergency handling initiated\n");
             printf("Emergency Count    : %d\n", emergencyCount);
             printf("=====================================\n\n");
@@ -374,7 +480,9 @@ void SystemMonitorTask(void* pvParameters)
         printf("Queue Status        : %s\n", sentCount == receivedCount ? "NORMAL" : "WARNING");
         printf("System Health       : RUNNING\n");
         printf("Free Heap           : %u bytes\n", (unsigned int)xPortGetFreeHeapSize());
-        printf("====================================\n\n");
+        printf("====================================\n");
+
+        PrintTelemetryThresholdTable();
 
         fflush(stdout);
 
